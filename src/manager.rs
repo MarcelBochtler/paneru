@@ -727,6 +727,7 @@ impl WindowManager {
         mut apps: Query<(Entity, &mut Application)>,
         mut active_display: Query<&mut Display, With<FocusedMarker>>,
         main_cid: Res<MainConnection>,
+        config: Option<Res<Config>>,
         mut commands: Commands,
     ) {
         let new_windows = &mut trigger.event_mut().0;
@@ -785,12 +786,33 @@ impl WindowManager {
                 window.minimized = minimized;
                 window.is_root = is_root;
             }
+
+            // Check if window matches floating rules
+            let app_name = app.app_name();
+            let should_float = config
+                .as_ref()
+                .and_then(|c| c.compiled_floating_rules())
+                .as_ref()
+                .map(|rules| window.matches_floating_rules(Some(app_name), Some(rules)))
+                .unwrap_or(false);
+
+            if should_float {
+                window.manage(false);
+                debug!(
+                    "{}: window {} (app: {}) marked as floating due to config rules",
+                    function_name!(),
+                    window_id,
+                    app_name
+                );
+            }
+
             debug!(
-                "{}: window {} isroot {} eligible {}",
+                "{}: window {} isroot {} eligible {} managed {}",
                 function_name!(),
                 window_id,
                 window.is_root(),
                 window.is_eligible(),
+                window.managed(),
             );
 
             let Ok(mut active_display) = active_display.single_mut() else {
@@ -798,6 +820,14 @@ impl WindowManager {
             };
             debug!("Active display {}", active_display.id);
             _ = window.update_frame(Some(&active_display.bounds));
+
+            // Only add eligible AND managed windows to panel
+            if !window.is_eligible() || !window.managed() {
+                // Spawn window entity but don't add to panel
+                let entity = commands.spawn(window).id();
+                commands.entity(entity).set_parent_in_place(app_entity);
+                continue;
+            }
 
             let Ok(panel) = active_display.active_panel(main_cid.0) else {
                 return;

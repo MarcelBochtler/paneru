@@ -55,6 +55,7 @@ pub struct Application {
     pid: Pid,
     connection: Option<ConnID>,
     handler: AxObserverHandler,
+    app_name: String,
 }
 
 impl Drop for Application {
@@ -95,6 +96,7 @@ impl Application {
                 }
             },
             handler: AxObserverHandler::new(process.pid, events.clone())?,
+            app_name: process.name.clone(),
         })
     }
 
@@ -114,6 +116,15 @@ impl Application {
     /// The process serial number.
     pub fn psn(&self) -> ProcessSerialNumber {
         self.psn
+    }
+
+    /// Returns the application name from the parent Process.
+    ///
+    /// # Returns
+    ///
+    /// The application name as obtained from macOS `CopyProcessName` API.
+    pub fn app_name(&self) -> &str {
+        &self.app_name
     }
 
     /// Retrieves the connection ID (`ConnID`) of the application.

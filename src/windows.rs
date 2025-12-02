@@ -908,6 +908,69 @@ impl Window {
         self.is_root && self.is_real() // TODO: check for WINDOW_RULE_MANAGED
     }
 
+    /// Checks if the window matches any floating rules from the configuration.
+    ///
+    /// # Arguments
+    ///
+    /// * `app_name` - Optional application name from parent Process entity
+    /// * `rules` - Optional compiled floating rules from config
+    ///
+    /// # Returns
+    ///
+    /// `true` if window matches any floating rule, `false` otherwise
+    pub fn matches_floating_rules(
+        &self,
+        app_name: Option<&str>,
+        rules: Option<&crate::config::CompiledFloatingRules>,
+    ) -> bool {
+        let Some(rules) = rules else {
+            return false;
+        };
+
+        let Some(app_name) = app_name else {
+            return false;
+        };
+
+        for app_rule in &rules.application_rules {
+            // Exact match on application name (case-sensitive)
+            if app_rule.app_name == app_name {
+                // Empty patterns = match ALL windows of this app
+                if app_rule.window_title_patterns.is_empty() {
+                    log::debug!(
+                        "{}: window {} matches app rule '{}' (all windows)",
+                        stdext::function_name!(),
+                        self.id(),
+                        app_name
+                    );
+                    return true;
+                }
+
+                // Check window title against patterns
+                let Ok(title) = self.title() else {
+                    log::debug!(
+                        "{}: could not get title for window {}, skipping title match",
+                        stdext::function_name!(),
+                        self.id()
+                    );
+                    continue;
+                };
+
+                if app_rule.window_title_patterns.iter().any(|p| p.is_match(&title)) {
+                    log::debug!(
+                        "{}: window {} (title: '{}') matches app rule '{}'",
+                        stdext::function_name!(),
+                        self.id(),
+                        title,
+                        app_name
+                    );
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
     /// Repositions the window to the specified x and y coordinates.
     ///
     /// # Arguments

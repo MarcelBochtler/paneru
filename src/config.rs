@@ -2,6 +2,7 @@ use bevy::ecs::{resource::Resource, system::Res};
 use log::{error, info};
 use notify::EventHandler;
 use objc2_core_foundation::{CFData, CFString};
+use regex::Regex;
 use serde::{Deserialize, Deserializer, de};
 use std::{
     collections::HashMap,
@@ -14,6 +15,35 @@ use stdext::function_name;
 use stdext::prelude::RwLockExt;
 
 use crate::{platform::CFStringRef, skylight::OSStatus, util::AXUIWrapper};
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct ApplicationFloatingRule {
+    /// Exact application name (case-sensitive)
+    pub name: String,
+
+    /// Optional window title patterns (empty = match all windows)
+    #[serde(default)]
+    pub window_titles: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CompiledApplicationRule {
+    pub app_name: String,
+    pub window_title_patterns: Vec<Regex>,
+}
+
+#[derive(Deserialize, Clone, Debug, Default)]
+pub struct FloatingRules {
+    /// Application-based floating rules
+    #[serde(default)]
+    pub applications: Vec<ApplicationFloatingRule>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CompiledFloatingRules {
+    /// Compiled application-based rules
+    pub application_rules: Vec<CompiledApplicationRule>,
+}
 
 #[derive(Clone, Debug, Resource)]
 pub struct Config {
@@ -50,6 +80,8 @@ impl Config {
         let mut old = self.inner.force_write();
         old.options = new.options;
         old.bindings = new.bindings;
+        old.floating = new.floating;
+        old.compiled_rules = new.compiled_rules;
         Ok(())
     }
 
@@ -88,6 +120,15 @@ impl Config {
             .find(|bind| bind.code == keycode && bind.modifiers == mask)
             .cloned()
     }
+
+    /// Returns the compiled floating rules from the configuration.
+    ///
+    /// # Returns
+    ///
+    /// `Some(CompiledFloatingRules)` if floating rules are configured, otherwise `None`.
+    pub fn compiled_floating_rules(&self) -> Option<CompiledFloatingRules> {
+        self.inner().compiled_rules.clone()
+    }
 }
 
 impl EventHandler for Config {
@@ -107,6 +148,10 @@ impl EventHandler for Config {
 struct InnerConfig {
     options: MainOptions,
     bindings: HashMap<String, Keybinding>,
+    #[serde(default)]
+    floating: FloatingRules,
+    #[serde(skip)]
+    compiled_rules: Option<CompiledFloatingRules>,
 }
 
 impl InnerConfig {
@@ -160,6 +205,44 @@ impl InnerConfig {
                 binding.code = code;
             }
             info!("bind: {binding:?}");
+        });
+
+        // Compile application-based floating rules
+        let app_rules = config
+            .floating
+            .applications
+            .iter()
+            .map(|app_rule| {
+                // Validate app name not empty
+                if app_rule.name.trim().is_empty() {
+                    return Err(format!(
+                        "Application name cannot be empty in [[floating.applications]]"
+                    ));
+                }
+
+                // Compile window title patterns for this app
+                let patterns = app_rule
+                    .window_titles
+                    .iter()
+                    .map(|pattern| {
+                        Regex::new(pattern).map_err(|err| {
+                            format!(
+                                "Invalid regex pattern '{}' for application '{}': {}",
+                                pattern, app_rule.name, err
+                            )
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                Ok(CompiledApplicationRule {
+                    app_name: app_rule.name.clone(),
+                    window_title_patterns: patterns,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        config.compiled_rules = Some(CompiledFloatingRules {
+            application_rules: app_rules,
         });
 
         Ok(config)
@@ -559,6 +642,14 @@ focus_follows_mouse = true
 [bindings]
 quit = "ctrl+alt-q"
 manage = "ctrl+alt-t"
+
+[floating]
+[[floating.applications]]
+name = "Calculator"
+
+[[floating.applications]]
+name = "Safari"
+window_titles = ["^Settings", "^Preferences"]
 "#;
     let config = InnerConfig::parse_config(input).expect("Failed to parse config");
 
@@ -577,4 +668,16 @@ manage = "ctrl+alt-t"
     assert_eq!(manage_binding.key, "t");
     assert_eq!(manage_binding.modifiers, (1 << 0) | (1 << 3));
     assert_eq!(manage_binding.command, "manage");
+
+    assert_eq!(config.floating.applications.len(), 2);
+    assert_eq!(config.floating.applications[0].name, "Calculator");
+    assert!(config.floating.applications[0].window_titles.is_empty());
+    assert_eq!(config.floating.applications[1].name, "Safari");
+    assert_eq!(config.floating.applications[1].window_titles.len(), 2);
+
+    let compiled = config.compiled_rules.expect("Rules not compiled");
+    assert_eq!(compiled.application_rules.len(), 2);
+    assert_eq!(compiled.application_rules[0].app_name, "Calculator");
+    assert!(compiled.application_rules[0].window_title_patterns.is_empty());
+    assert_eq!(compiled.application_rules[1].window_title_patterns.len(), 2);
 }
