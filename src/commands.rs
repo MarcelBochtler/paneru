@@ -207,7 +207,7 @@ fn resize_window(
     focused_entity: Entity,
     windows: &mut Query<&mut Window>,
     commands: &mut Commands,
-    config: Option<&Res<Config>>,
+    config: &Config,
 ) {
     let Ok(window) = windows.get_mut(focused_entity) else {
         return;
@@ -280,7 +280,7 @@ fn command_windows(
     focused_entity: Entity,
     windows: &mut Query<&mut Window>,
     commands: &mut Commands,
-    config: Option<&Res<Config>>,
+    config: &Config,
 ) -> Result<()> {
     let bounds = active_display.bounds;
     let active_panel = active_display.active_panel(main_cid)?;
@@ -354,7 +354,7 @@ pub fn process_command_trigger(
     mut windows: Query<(&mut Window, Entity, Option<&FocusedMarker>)>,
     mut display: Query<&mut Display, With<FocusedMarker>>,
     mut commands: Commands,
-    config: Option<Res<Config>>,
+    config: Res<Config>,
 ) {
     let Ok(mut active_display) = display.single_mut() else {
         warn!("{}: Unable to get current display.", function_name!());
