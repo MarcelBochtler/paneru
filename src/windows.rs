@@ -662,6 +662,7 @@ pub struct Window {
     pub minimized: bool,
     pub eligible: bool,
     pub width_ratio: f64,
+    pub maximized: bool,
     managed: bool,
 }
 
@@ -685,6 +686,7 @@ impl Window {
             minimized: false,
             eligible: false,
             width_ratio: 0.33,
+            maximized: false,
             managed: true,
         };
 
@@ -961,7 +963,9 @@ impl Window {
                 )
             };
             self.frame.size = size;
-            self.width_ratio = size.width / display_bounds.size.width;
+            if !self.maximized {
+                self.width_ratio = size.width / display_bounds.size.width;
+            }
         }
     }
 
@@ -1029,7 +1033,17 @@ impl Window {
         if !CGRectEqualToRect(frame, self.frame) {
             self.frame = frame;
             self.width_ratio = if let Some(display_bounds) = display_bounds {
-                frame.size.width / display_bounds.size.width
+                let ratio = frame.size.width / display_bounds.size.width;
+
+                if self.maximized && (ratio - 1.0).abs() > 0.01 {
+                    self.maximized = false;
+                }
+
+                if !self.maximized {
+                    ratio
+                } else {
+                    self.width_ratio
+                }
             } else {
                 0.5
             };

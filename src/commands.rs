@@ -235,7 +235,7 @@ fn full_width_window(
     focused_entity: Entity,
     windows: &mut Query<&mut Window>,
     commands: &mut Commands,
-    config: &Config,
+    _config: &Config,
 ) {
     let Ok(mut window) = windows.get_mut(focused_entity) else {
         return;
@@ -245,16 +245,14 @@ fn full_width_window(
     let height = window.frame().size.height;
     let y = window.frame().origin.y;
 
-    let is_full_width = (window.frame().size.width - display_width).abs() < 1.0;
+    window.maximized = !window.maximized;
 
-    let (width, width_ratio, x) = if is_full_width {
-        let width_ratios = preset_column_widths(config);
-        let ratio = *width_ratios.first().unwrap_or(&0.5);
-        let w = ratio * display_width;
-        let x_pos = (display_width - w).min(window.frame().origin.x);
-        (w, ratio, x_pos)
+    let (width, x) = if window.maximized {
+        (display_width, 0.0)
     } else {
-        (display_width, 1.0, 0.0)
+        let w = window.width_ratio * display_width;
+        let x_pos = (display_width - w).min(window.frame().origin.x);
+        (w, x_pos)
     };
 
     commands.entity(focused_entity).insert(RepositionMarker {
@@ -263,8 +261,6 @@ fn full_width_window(
     commands.entity(focused_entity).insert(ResizeMarker {
         size: CGSize { width, height },
     });
-
-    window.width_ratio = width_ratio;
 }
 
 fn manage_window(
