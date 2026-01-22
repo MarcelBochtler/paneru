@@ -6,9 +6,11 @@ use bevy::ecs::system::Query;
 use core::ptr::NonNull;
 use log::{debug, error, trace, warn};
 use notify::{RecursiveMode, Watcher};
+use objc2::MainThreadMarker;
+use objc2_app_kit::NSScreen;
 use objc2_core_foundation::{
     CFArray, CFDictionary, CFEqual, CFMutableData, CFNumber, CFNumberType, CFRetained, CFString,
-    CGPoint, CGRect, kCFBooleanTrue,
+    CGPoint, CGRect, kCFBooleanTrue, CFPropertyList,
 };
 use objc2_core_graphics::{
     CGDirectDisplayID, CGDisplayBounds, CGError, CGGetActiveDisplayList, CGRectContainsPoint,
@@ -50,6 +52,87 @@ mod process;
 mod skylight;
 mod windows;
 
+// CFPreferences bindings for querying Dock preferences
+unsafe extern "C" {
+    fn CFPreferencesCopyAppValue(
+        key: &CFString,
+        application_id: &CFString,
+    ) -> *const CFPropertyList;
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DockOrientation {
+    Left,
+    Bottom,
+    Right,
+}
+
+impl DockOrientation {
+    fn from_string(s: &str) -> Self {
+        match s {
+            "left" => DockOrientation::Left,
+            "right" => DockOrientation::Right,
+            _ => DockOrientation::Bottom, // default
+        }
+    }
+}
+
+fn get_dock_preferences() -> (DockOrientation, f64, bool) {
+    unsafe {
+        let app_id = CFString::from_static_str("com.apple.dock");
+
+        // Get dock orientation
+        let orientation_key = CFString::from_static_str("orientation");
+        let orientation_value = CFPreferencesCopyAppValue(&orientation_key, &app_id);
+        let orientation = if let Some(ptr) = NonNull::new(orientation_value as *mut CFString) {
+            let cf_value = CFRetained::from_raw(ptr);
+            let orientation_str = cf_value.to_string();
+            DockOrientation::from_string(&orientation_str)
+        } else {
+            DockOrientation::Bottom // default
+        };
+
+        // Get dock tile size
+        let tilesize_key = CFString::from_static_str("tilesize");
+        let tilesize_value = CFPreferencesCopyAppValue(&tilesize_key, &app_id);
+        let tilesize = if let Some(ptr) = NonNull::new(tilesize_value as *mut CFNumber) {
+            let cf_value = CFRetained::from_raw(ptr);
+            let mut value: f64 = 0.0;
+            if cf_value.value(CFNumberType::Float64Type, &raw mut value as *mut _) {
+                value
+            } else {
+                48.0
+            }
+        } else {
+            48.0 // default tile size
+        };
+
+        // Get autohide setting
+        let autohide_key = CFString::from_static_str("autohide");
+        let autohide_value = CFPreferencesCopyAppValue(&autohide_key, &app_id);
+        let autohide = if let Some(ptr) = NonNull::new(autohide_value as *mut CFNumber) {
+            let cf_value = CFRetained::from_raw(ptr);
+            // Try to read as integer (0 = false, 1 = true)
+            let mut value: i32 = 0;
+            if cf_value.value(CFNumberType::SInt32Type, &raw mut value as *mut _) {
+                value != 0
+            } else {
+                false
+            }
+        } else {
+            false // default to not auto-hiding
+        };
+
+        // The actual dock size is roughly tilesize + padding
+        // Dock adds about 16 pixels of padding + magnification space
+        let dock_size = tilesize + 16.0;
+
+        debug!("Dock preferences - orientation: {:?}, size: {}, autohide: {}", orientation, dock_size, autohide);
+
+        (orientation, dock_size, autohide)
+    }
+}
+
 /// Defines the interface for a window manager, abstracting OS-specific operations.
 pub trait WindowManagerApi: Send + Sync {
     /// Creates a new `Application` instance from a given `ProcessApi`.
@@ -89,6 +172,17 @@ pub trait WindowManagerApi: Send + Sync {
     ///
     /// A `Vec<Display>` containing `Display` objects for all present displays.
     fn present_displays(&self) -> Vec<Display>;
+    /// Retrieves the visible frame (usable area excluding Dock and menu bar) for a given display.
+    ///
+    /// # Arguments
+    ///
+    /// * `display_id` - The `CGDirectDisplayID` of the display.
+    /// * `bounds` - The full `CGRect` bounds of the display.
+    ///
+    /// # Returns
+    ///
+    /// A `CGRect` representing the visible frame.
+    fn get_visible_frame_for_display(&self, display_id: CGDirectDisplayID, bounds: CGRect) -> CGRect;
     /// Retrieves the `CGDirectDisplayID` of the active menu bar display.
     ///
     /// # Returns
@@ -478,6 +572,128 @@ impl WindowManagerApi for WindowManagerOS {
             .collect()
     }
 
+    /// Retrieves the visible frame (usable area excluding Dock and menu bar) for a given display.
+    ///
+    /// # Arguments
+    ///
+    /// * `display_id` - The `CGDirectDisplayID` of the display.
+    /// * `bounds` - The full `CGRect` bounds of the display (used for matching).
+    ///
+    /// # Returns
+    ///
+    /// A `CGRect` representing the visible frame.
+    fn get_visible_frame_for_display(&self, display_id: CGDirectDisplayID, bounds: CGRect) -> CGRect {
+        debug!(
+            "{}: Getting visible frame for display {} with bounds origin=({}, {}), size=({}, {})",
+            function_name!(),
+            display_id,
+            bounds.origin.x,
+            bounds.origin.y,
+            bounds.size.width,
+            bounds.size.height
+        );
+
+        // Get dock preferences
+        let (dock_orientation, dock_size, dock_autohide) = get_dock_preferences();
+
+        // NSScreen APIs require main thread
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+
+        // Get all screens
+        let screens = NSScreen::screens(mtm);
+        debug!("{}: Found {} NSScreen(s)", function_name!(), screens.len());
+
+        // Find the screen that matches this display ID
+        for (idx, screen) in screens.iter().enumerate() {
+            let screen_frame = screen.frame();
+            debug!(
+                "{}: NSScreen[{}] frame: origin=({}, {}), size=({}, {})",
+                function_name!(),
+                idx,
+                screen_frame.origin.x,
+                screen_frame.origin.y,
+                screen_frame.size.width,
+                screen_frame.size.height
+            );
+
+            let width_diff = (screen_frame.size.width - bounds.size.width).abs();
+            let height_diff = (screen_frame.size.height - bounds.size.height).abs();
+
+            if width_diff < 2.0 && height_diff < 2.0 {
+                // Found matching screen
+                // Start with NSScreen.visibleFrame which accounts for menu bar
+                let visible_cocoa = screen.visibleFrame();
+
+                debug!(
+                    "{}: NSScreen visible frame (Cocoa coords): origin=({}, {}), size=({}, {})",
+                    function_name!(),
+                    visible_cocoa.origin.x,
+                    visible_cocoa.origin.y,
+                    visible_cocoa.size.width,
+                    visible_cocoa.size.height
+                );
+
+                // Manually apply dock adjustments since NSScreen.visibleFrame doesn't always account for it
+                let mut adjusted_origin = visible_cocoa.origin;
+                let mut adjusted_size = visible_cocoa.size;
+
+                if !dock_autohide {
+                    match dock_orientation {
+                        DockOrientation::Left => {
+                            adjusted_origin.x += dock_size;
+                            adjusted_size.width -= dock_size;
+                        }
+                        DockOrientation::Right => {
+                            adjusted_size.width -= dock_size;
+                        }
+                        DockOrientation::Bottom => {
+                            adjusted_origin.y += dock_size;
+                            adjusted_size.height -= dock_size;
+                        }
+                    }
+                }
+
+                debug!(
+                    "{}: Adjusted visible frame (Cocoa coords): origin=({}, {}), size=({}, {})",
+                    function_name!(),
+                    adjusted_origin.x,
+                    adjusted_origin.y,
+                    adjusted_size.width,
+                    adjusted_size.height
+                );
+
+                // Convert from Cocoa coordinates (bottom-left origin) to Quartz coordinates (top-left origin)
+                // Quartz Y = Screen Height - Cocoa Y - Cocoa Height
+                let visible_quartz = CGRect {
+                    origin: CGPoint {
+                        x: adjusted_origin.x,
+                        y: screen_frame.size.height - adjusted_origin.y - adjusted_size.height,
+                    },
+                    size: adjusted_size,
+                };
+
+                debug!(
+                    "{}: Display {} visible frame (Quartz coords): origin=({}, {}), size=({}, {})",
+                    function_name!(),
+                    display_id,
+                    visible_quartz.origin.x,
+                    visible_quartz.origin.y,
+                    visible_quartz.size.width,
+                    visible_quartz.size.height
+                );
+                return visible_quartz;
+            }
+        }
+
+        // Fallback: if we can't find the NSScreen, return the full bounds
+        warn!(
+            "{}: Could not find matching NSScreen for display {} - using full bounds as fallback",
+            function_name!(),
+            display_id
+        );
+        bounds
+    }
+
     /// Retrieves a list of all currently present displays, along with their associated spaces.
     ///
     /// # Returns
@@ -506,7 +722,11 @@ impl WindowManagerApi for WindowManagerOS {
                         let mut menubar_height: u32 = 0;
                         unsafe { SLSGetDisplayMenubarHeight(id, &raw mut menubar_height) };
                         debug!("{}: menubar height: {menubar_height}", function_name!());
-                        Display::new(id, spaces, bounds, menubar_height)
+
+                        // Query the visible frame (usable area excluding Dock and menu bar)
+                        let visible_frame = self.get_visible_frame_for_display(id, bounds);
+
+                        Display::new(id, spaces, bounds, visible_frame, menubar_height)
                     })
                 })
             })

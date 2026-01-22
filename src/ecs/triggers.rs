@@ -1247,6 +1247,62 @@ pub(super) fn refresh_configuration_trigger(
     }
 }
 
+/// Handles Dock preference changes and restarts.
+///
+/// When the Dock's position, size, or auto-hide settings change, this trigger updates
+/// the visible frame for all displays to reflect the new usable screen area, then
+/// triggers a window repositioning to ensure windows don't overlap with the Dock.
+///
+/// # Arguments
+///
+/// * `trigger` - The Bevy event trigger containing the Dock change event.
+/// * `displays` - A query for all displays and their entities.
+/// * `window_manager` - The window manager resource.
+/// * `commands` - Bevy commands to manage components and trigger events.
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn dock_changed_trigger(
+    trigger: On<WMEventTrigger>,
+    mut displays: Query<(&mut Display, Entity)>,
+    window_manager: Res<WindowManager>,
+    mut commands: Commands,
+) {
+    let event = &trigger.event().0;
+    match event {
+        Event::DockDidChangePref { msg } => {
+            debug!("{}: Dock preferences changed: {}", function_name!(), msg);
+        }
+        Event::DockDidRestart { msg } => {
+            debug!("{}: Dock restarted: {}", function_name!(), msg);
+        }
+        _ => return,
+    }
+
+    // Re-query visible frame for all displays
+    for (mut display, _entity) in displays.iter_mut() {
+        let display_id = display.id();
+        let bounds = display.bounds;
+
+        // Query the new visible frame
+        let visible_frame = window_manager.0.get_visible_frame_for_display(display_id, bounds);
+
+        debug!(
+            "{}: Display {} visible frame updated: origin=({}, {}), size=({}, {})",
+            function_name!(),
+            display_id,
+            visible_frame.origin.x,
+            visible_frame.origin.y,
+            visible_frame.size.width,
+            visible_frame.size.height
+        );
+
+        // Update the display's visible frame
+        display.visible_frame = visible_frame;
+    }
+
+    // Trigger window repositioning
+    commands.trigger(WMEventTrigger(Event::DisplayChanged));
+}
+
 #[allow(clippy::needless_pass_by_value)]
 pub(super) fn print_internal_state_trigger(
     trigger: On<WMEventTrigger>,

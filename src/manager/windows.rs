@@ -66,37 +66,57 @@ pub trait WindowApi: Send + Sync {
     ) -> CGRect {
         // Check if window needs to be fully exposed
         let window_id = self.id();
-        let (mut origin, display_bounds) =
-            moving.map_or((self.frame().origin, active_display.bounds()), |marker| {
+        let (mut origin, visible_frame) =
+            moving.map_or((self.frame().origin, active_display.display().visible_frame), |marker| {
                 (
                     marker.origin,
                     active_display
                         .other()
                         .find(|display| display.id() == marker.display_id)
-                        .map_or(active_display.bounds(), |display| display.bounds),
+                        .map_or(active_display.display().visible_frame, |display| display.visible_frame),
                 )
             });
         let size = resizing.map_or(self.frame().size, |marker| marker.size);
 
-        let moved = if origin.x + size.width > display_bounds.size.width {
+        let mut moved = false;
+
+        // Check horizontal bounds (respect Dock on left/right)
+        if origin.x + size.width > visible_frame.origin.x + visible_frame.size.width {
             trace!(
                 "{}: Bumped window {} to the left",
                 function_name!(),
                 window_id
             );
-            origin.x = display_bounds.size.width - size.width;
-            true
-        } else if origin.x < 0.0 {
+            origin.x = visible_frame.origin.x + visible_frame.size.width - size.width;
+            moved = true;
+        } else if origin.x < visible_frame.origin.x {
             trace!(
                 "{}: Bumped window {} to the right",
                 function_name!(),
                 window_id
             );
-            origin.x = 0.0;
-            true
-        } else {
-            false
-        };
+            origin.x = visible_frame.origin.x;
+            moved = true;
+        }
+
+        // Check vertical bounds (respect Dock on bottom)
+        if origin.y + size.height > visible_frame.origin.y + visible_frame.size.height {
+            trace!(
+                "{}: Bumped window {} up (below bottom Dock)",
+                function_name!(),
+                window_id
+            );
+            origin.y = visible_frame.origin.y + visible_frame.size.height - size.height;
+            moved = true;
+        } else if origin.y < visible_frame.origin.y {
+            trace!(
+                "{}: Bumped window {} down (above menu bar)",
+                function_name!(),
+                window_id
+            );
+            origin.y = visible_frame.origin.y;
+            moved = true;
+        }
 
         if moved {
             let display_id = moving.map_or(active_display.id(), |marker| marker.display_id);

@@ -7,6 +7,7 @@ use bevy::ecs::system::{Commands, Local, NonSend, NonSendMut, Populated, Query, 
 use bevy::ecs::world::World;
 use bevy::time::Time;
 use log::{debug, error, info, trace, warn};
+use objc2_core_foundation::CGRect;
 use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -666,7 +667,7 @@ pub(super) fn animate_windows(
             commands.entity(entity).try_remove::<RepositionMarker>();
             window.reposition(
                 origin.x,
-                origin.y.max(display.menubar_height),
+                origin.y.max(display.visible_frame.origin.y),
                 &display.bounds,
             );
             continue;
@@ -688,7 +689,7 @@ pub(super) fn animate_windows(
         );
         window.reposition(
             current.x + delta_x,
-            (current.y + delta_y).max(display.menubar_height),
+            (current.y + delta_y).max(display.visible_frame.origin.y),
             &display.bounds,
         );
     }
@@ -851,7 +852,7 @@ pub(super) fn reshuffle_around_window(
         return;
     }
 
-    let display_bounds = active_display.bounds();
+    let visible_frame = active_display.display().visible_frame;
     let Ok(active_panel) = active_display.active_panel() else {
         return;
     };
@@ -874,7 +875,7 @@ pub(super) fn reshuffle_around_window(
         let Some(positions) = calculate_positions(
             entity,
             frame.origin.x,
-            display_bounds.size.width,
+            visible_frame,
             active_panel,
             &window_width,
         ) else {
@@ -909,12 +910,13 @@ pub(super) fn reshuffle_around_window(
 
 pub fn absolute_positions<W>(
     active_panel: &WindowPane,
+    left_edge_start: f64,
     window_width: W,
 ) -> impl Iterator<Item = f64>
 where
     W: Fn(Entity) -> Option<f64>,
 {
-    let mut left_edge = 0.0;
+    let mut left_edge = left_edge_start;
 
     active_panel
         .all_columns()
@@ -930,7 +932,7 @@ where
 fn calculate_positions<W>(
     entity: Entity,
     current_x: f64,
-    display_width: f64,
+    visible_frame: CGRect,
     active_panel: &WindowPane,
     window_width: W,
 ) -> Option<impl Iterator<Item = f64>>
@@ -942,12 +944,15 @@ where
         .into_iter()
         .filter_map(&window_width)
         .collect::<Vec<_>>();
-    let positions = absolute_positions(active_panel, &window_width).collect::<Vec<_>>();
+    let positions = absolute_positions(active_panel, visible_frame.origin.x, &window_width).collect::<Vec<_>>();
     let offset = active_panel
         .index_of(entity)
         .ok()
         .and_then(|index| positions.get(index))
         .map(|offset| current_x - offset)?;
+
+    let left_bound = visible_frame.origin.x;
+    let right_bound = visible_frame.origin.x + visible_frame.size.width;
 
     Some(
         positions
@@ -955,10 +960,10 @@ where
             .zip(widths)
             .map(move |(position, width)| {
                 let left_edge = position + offset;
-                if left_edge + width < 0.0 {
-                    0.0 - width + WINDOW_HIDDEN_THRESHOLD
-                } else if left_edge > display_width - WINDOW_HIDDEN_THRESHOLD {
-                    display_width - WINDOW_HIDDEN_THRESHOLD
+                if left_edge + width < left_bound {
+                    left_bound - width + WINDOW_HIDDEN_THRESHOLD
+                } else if left_edge > right_bound - WINDOW_HIDDEN_THRESHOLD {
+                    right_bound - WINDOW_HIDDEN_THRESHOLD
                 } else {
                     left_edge
                 }
@@ -986,8 +991,7 @@ fn reposition_stack(
     commands: &mut Commands,
 ) {
     const MIN_WINDOW_HEIGHT: f64 = 200.0;
-    let display_height =
-        active_display.bounds().size.height - active_display.display().menubar_height;
+    let display_height = active_display.display().visible_frame.size.height;
     let entities = match panel {
         Panel::Single(entity) => vec![*entity],
         Panel::Stack(stack) => stack.clone(),
@@ -1010,7 +1014,7 @@ fn reposition_stack(
         return;
     };
 
-    let mut y_pos = 0f64;
+    let mut y_pos = active_display.display().visible_frame.origin.y;
     for (entity, window_height) in entities.into_iter().zip(heights) {
         reposition_entity(entity, upper_left, y_pos, active_display.id(), commands);
         resize_entity(entity, width, window_height, active_display.id(), commands);

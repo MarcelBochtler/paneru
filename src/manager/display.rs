@@ -309,6 +309,8 @@ pub struct Display {
     pub spaces: HashMap<u64, WindowPane>,
     /// The physical bounds (origin and size) of the display.
     pub bounds: CGRect,
+    /// The visible frame (usable area excluding Dock and menu bar) of the display.
+    pub visible_frame: CGRect,
     /// The height of the menubar on this display.
     pub menubar_height: f64,
 }
@@ -321,6 +323,7 @@ impl Display {
     /// * `id` - The `CGDirectDisplayID` of the display.
     /// * `spaces` - A vector of space IDs associated with this display.
     /// * `bounds` - The `CGRect` representing the bounds of the display.
+    /// * `visible_frame` - The `CGRect` representing the usable area excluding Dock and menu bar.
     /// * `menubar_height` - The height of the menubar on this display.
     ///
     /// # Returns
@@ -330,6 +333,7 @@ impl Display {
         id: CGDirectDisplayID,
         spaces: Vec<u64>,
         bounds: CGRect,
+        visible_frame: CGRect,
         menubar_height: u32,
     ) -> Self {
         let spaces = spaces
@@ -340,6 +344,7 @@ impl Display {
             id,
             spaces,
             bounds,
+            visible_frame,
             menubar_height: menubar_height.into(),
         }
     }

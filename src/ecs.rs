@@ -80,6 +80,7 @@ pub fn register_triggers(app: &mut bevy::app::App) {
         .add_observer(triggers::display_add_trigger)
         .add_observer(triggers::display_remove_trigger)
         .add_observer(triggers::display_moved_trigger)
+        .add_observer(triggers::dock_changed_trigger)
         .add_observer(triggers::front_switched_trigger)
         .add_observer(triggers::center_mouse_trigger)
         .add_observer(triggers::window_focused_trigger)
